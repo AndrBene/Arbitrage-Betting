@@ -37,6 +37,7 @@ class App(object):
         self.running = False
         self.bet_amount = 100
         self.tot_profit = 0
+        self.ask_successful, self.bid_successful = False, False
 
     def findBidList(self):
         self.bid.results = self.bid.driver.find_elements(By.XPATH,
@@ -144,7 +145,6 @@ class App(object):
             xpath = "//*[@data-qa='biglietto_puntata']" if (ask_or_bid == "BID") else "//input[contains(@class,'counter__input')]"
 
             self.bet_input = website.driver.find_element(By.XPATH, xpath)
-            stake_formatted = f"{stake:.2f}".replace('.', ',')
 
             website.driver.execute_script("""
                 const input = arguments[0];
@@ -156,7 +156,13 @@ class App(object):
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 input.dispatchEvent(new Event('change', { bubbles: true }));
                 input.blur();
-            """, self.bet_input, stake_formatted)
+            """, self.bet_input, stake)
+
+            if ask_or_bid == "BID":
+                self.bid_successful = True
+            else:
+                self.ask_successful = True
+
         except NoSuchElementException as ex:
             # print(f"[submitBid] element not found: {ex}")
             print(f"[submitBid] {ask_or_bid} didn't go through ...")
@@ -171,16 +177,20 @@ class App(object):
         return True if (prob_ask + prob_bid < 1) else False
     
     def emptyBids(self):
+        print(f"emptyBids")
         try:
             for elem in self.bid.driver.find_elements(By.XPATH, "//button[.//span[contains(text(),'Svuota tutto')]]"):
-                            elem.click()
+                            # elem.click()
+                            self.bid.driver.execute_script("arguments[0].click();", elem)
             for elem in self.ask.driver.find_elements(By.XPATH, "//div[contains(@class,'betslip__options-btn')][.//span[contains(text(),'Elimina tutto')]]"):
-                            elem.click()
+                            # elem.click()
+                            self.ask.driver.execute_script("arguments[0].click();", elem)
                             time.sleep(2)  # hope it's rendered by now
                             si_button = self.ask.driver.find_element(By.XPATH, "//div[contains(@class,'modals__container')]//button[contains(@class,'modals__btn-primary') and normalize-space(text())='Si']")
-                            si_button.click()
-        except:
-            print(f"[emptyBids] error:")
+                            # si_button.click()
+                            self.ask.driver.execute_script("arguments[0].click();", si_button)
+        except Exception as ex:
+            print(f"[emptyBids] error: {ex}")
 
     def arbitrage(self):
         # 1. if running, then start checks
@@ -194,6 +204,7 @@ class App(object):
 
         try:
             if self.running:
+                self.ask_successful, self.bid_successful = False, False
                 self.bid_dict, self.ask_dict, self.shared_keys, self.common_bets = \
                     dict(), dict(), None, None
 
@@ -218,7 +229,14 @@ class App(object):
                                 self.bet_amount * implied_prob_ask/(implied_prob_ask + implied_prob_bid), \
                                 self.bet_amount * implied_prob_bid/(implied_prob_ask + implied_prob_bid)
 
-                            print(f"Betting {stake_ask} on {bet[0][i+2]} at {bet[0][i]} - {stake_bid} on {bet[1][2+i]} at {bet[1][1-i]}")
+                            stake_ask, stake_bid = \
+                                round(float(stake_ask)), round(float(stake_bid))
+                            
+                            if (stake_ask*bet[0][i] < self.bet_amount or stake_bid*bet[1][1-i] < self.bet_amount):
+                                print(f"after rounding stakes, arbitrage is not profitable")
+                                continue
+
+                            print(f"---- Betting {stake_ask} on {bet[0][i+2]} at {bet[0][i]} - {stake_bid} on {bet[1][3-i]} at {bet[1][1-i]} ----")
 
                             self.pool.apply_async(self.selectWager, args=("ASK", bet, i))
                             self.pool.apply_async(self.selectWager, args=("BID", bet))
@@ -230,10 +248,13 @@ class App(object):
                             # Join the pools so they run in parallel
                             self.pool.join()
 
-                            profit = (stake_ask*bet[0][i] + stake_bid*bet[1][1-i] \
-                                            - 2*self.bet_amount)/2
-                            self.tot_profit += profit
-                            print(f"profit: {profit} - tot profit: {self.tot_profit}")
+                            if (self.bid_successful and self.ask_successful):
+                                profit = round((stake_ask*bet[0][i] + stake_bid*bet[1][1-i] \
+                                                - 2*self.bet_amount)/2, 2)
+                                self.tot_profit += profit
+                                print(f"-> profit: {profit} (total profit: {self.tot_profit})")
+                            else:
+                                print(f"Bet was not successful")
 
                             self.emptyBids()
 
